@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -52,7 +52,10 @@ def load_models():
             "You are Qanoon Buddy, an AI legal assistant for Pakistan. "
             "Use the following pieces of retrieved context to answer the question. "
             "If you don't know the answer based on the context, say that you don't know and advise consulting a real lawyer. "
-            "Use clear, professional, and empathetic language.\n\n"
+            "Use clear, professional, and empathetic language.\n"
+            "CRITICAL: Always respond in the EXACT SAME language the user asked the question in. "
+            "If the user asks in English, respond in English. If they ask in Urdu (اردو), respond in Urdu. "
+            "If they ask in Roman Urdu, respond in Roman Urdu.\n\n"
             "Context: {context}"
         )
 
@@ -78,6 +81,52 @@ async def predict(req: PredictRequest):
         result = rag_chain.invoke({"input": req.query})
         return PredictResponse(response=result["answer"])
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/analyze-document")
+async def analyze_document(file: UploadFile = File(...)):
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+        
+    try:
+        # Save file temporarily
+        temp_path = f"temp_{file.filename}"
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
+            
+        # Extract text using PyPDFLoader or direct pypdf
+        from langchain_community.document_loaders import PyPDFLoader
+        loader = PyPDFLoader(temp_path)
+        pages = loader.load()
+        full_text = "\n".join([page.page_content for page in pages])
+        
+        os.remove(temp_path)
+        
+        if not full_text.strip():
+            raise HTTPException(status_code=400, detail="Could not extract text from the PDF.")
+            
+        # Truncate text to avoid token limits. Gemini 1.5 minimum is 1M tokens, but we use flash. Still fine for 20k chars
+        if len(full_text) > 30000:
+            full_text = full_text[:30000] + "... [Text Truncated]"
+            
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=os.environ.get("GEMINI_API_KEY"),
+            temperature=0.2,
+        )
+        
+        analysis_prompt = (
+            "You are an expert legal AI assistant. Analyze the following legal document (or excerpt).\n"
+            "Provide a concise summary, highlight the key clauses or main points, and identify any potential risks, liabilities, or obligations.\n\n"
+            f"DOCUMENT TEXT:\n{full_text}"
+        )
+        
+        result = llm.invoke(analysis_prompt)
+        return {"analysis": result.content}
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
