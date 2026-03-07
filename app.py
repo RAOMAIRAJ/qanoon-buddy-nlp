@@ -2,8 +2,8 @@ import os
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List
 from dotenv import load_dotenv
-
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -27,6 +27,26 @@ class PredictRequest(BaseModel):
     
 class PredictResponse(BaseModel):
     response: str
+
+class RiskRequest(BaseModel):
+    description: str
+
+class RiskResponse(BaseModel):
+    risk_level: str
+    legal_consequences: List[str]
+
+class FIRRequest(BaseModel):
+    incident_details: str
+
+class FIRResponse(BaseModel):
+    fir_draft: str
+
+class BailRequest(BaseModel):
+    offense_description: str
+
+class BailResponse(BaseModel):
+    is_bailable: bool
+    explanation: str
 
 # Globals for the loaded model and vector store
 vector_store = None
@@ -127,6 +147,95 @@ async def analyze_document(file: UploadFile = File(...)):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/analyze-risk", response_model=RiskResponse)
+async def analyze_risk(req: RiskRequest):
+    try:
+        import json
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=os.environ.get("GEMINI_API_KEY"),
+            temperature=0.2,
+        )
+        prompt = (
+            "You are a Pakistani legal AI expert. Analyze the following situation and return ONLY a valid JSON object. "
+            "Do not include markdown blocks or any other text.\n\n"
+            "Required JSON format:\n"
+            "{\n"
+            '  "risk_level": "Low", "Medium", or "High",\n'
+            '  "legal_consequences": ["consequence 1", "consequence 2"]\n'
+            "}\n\n"
+            f"SITUATION: {req.description}"
+        )
+        result = llm.invoke(prompt)
+        text = result.content.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+        data = json.loads(text.strip())
+        return RiskResponse(
+            risk_level=data.get("risk_level", "Unknown"),
+            legal_consequences=data.get("legal_consequences", [])
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-fir", response_model=FIRResponse)
+async def generate_fir(req: FIRRequest):
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=os.environ.get("GEMINI_API_KEY"),
+            temperature=0.3,
+        )
+        prompt = (
+            "You are a Pakistani legal AI expert. Based on the following incident details, draft a formal FIR (First Information Report) "
+            "ready to be submitted to the police in Pakistan. Format it professionally. Reply in English or Urdu depending on the input language.\n\n"
+            f"INCIDENT DETAILS: {req.incident_details}"
+        )
+        result = llm.invoke(prompt)
+        return FIRResponse(fir_draft=result.content.strip())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/calculate-bail", response_model=BailResponse)
+async def calculate_bail(req: BailRequest):
+    try:
+        import json
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=os.environ.get("GEMINI_API_KEY"),
+            temperature=0.2,
+        )
+        prompt = (
+            "You are a Pakistani legal AI expert. Based on the following offense description or penal code, determine if the offense is bailable according to Pakistani law. "
+            "Return ONLY a valid JSON object. Do not include markdown blocks or any other text.\n\n"
+            "Required JSON format:\n"
+            "{\n"
+            '  "is_bailable": true or false,\n'
+            '  "explanation": "Brief legal reasoning"\n'
+            "}\n\n"
+            f"OFFENSE: {req.offense_description}"
+        )
+        result = llm.invoke(prompt)
+        text = result.content.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+        data = json.loads(text.strip())
+        
+        is_bailable = data.get("is_bailable", False)
+        if isinstance(is_bailable, str):
+            is_bailable = is_bailable.lower() == "true"
+            
+        return BailResponse(
+            is_bailable=is_bailable,
+            explanation=data.get("explanation", "Could not determine explanation.")
+        )
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
