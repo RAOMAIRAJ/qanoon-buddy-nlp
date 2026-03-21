@@ -48,6 +48,14 @@ class BailResponse(BaseModel):
     is_bailable: bool
     explanation: str
 
+class MatchRequest(BaseModel):
+    description: str
+
+class MatchResponse(BaseModel):
+    specialization: str | None
+    city: str | None
+    max_budget: int | None
+
 # Globals for the loaded model and vector store
 vector_store = None
 rag_chain = None
@@ -234,6 +242,49 @@ async def calculate_bail(req: BailRequest):
         return BailResponse(
             is_bailable=is_bailable,
             explanation=data.get("explanation", "Could not determine explanation.")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/match-lawyer", response_model=MatchResponse)
+async def match_lawyer(req: MatchRequest):
+    try:
+        import json
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=os.environ.get("GEMINI_API_KEY"),
+            temperature=0.1,
+        )
+        prompt = (
+            "You are a legal AI assistant for Pakistan. Your job is to parse a user's natural language request for a lawyer "
+            "and extract the required city, specialization, and maximum budget (if mentioned).\n\n"
+            "The specialization MUST be exactly one of the following strings (or null if not determinable):\n"
+            "'family_law', 'criminal_law', 'corporate_law', 'tax_law', 'civil_law', 'real_estate', 'intellectual_property', 'labor_law', 'none'\n\n"
+            "Return ONLY a valid JSON object. Do not include markdown blocks or any other text.\n"
+            "Required JSON format:\n"
+            "{\n"
+            '  "specialization": "tax_law",\n'
+            '  "city": "Lahore",\n'
+            '  "max_budget": 5000\n'
+            "}\n\n"
+            f"USER REQUEST: {req.description}"
+        )
+        result = llm.invoke(prompt)
+        text = result.content.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+        data = json.loads(text.strip())
+        
+        spec = data.get("specialization")
+        if spec == "none":
+            spec = None
+            
+        return MatchResponse(
+            specialization=spec,
+            city=data.get("city"),
+            max_budget=data.get("max_budget")
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
