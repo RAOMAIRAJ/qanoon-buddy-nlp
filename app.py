@@ -9,7 +9,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 
 load_dotenv()
 
@@ -24,6 +25,7 @@ app.add_middleware(
 
 class PredictRequest(BaseModel):
     query: str
+    history: List[dict] = []
     
 class PredictResponse(BaseModel):
     response: str
@@ -77,18 +79,21 @@ def load_models():
         )
         
         system_prompt = (
-            "You are Qanoon Buddy, an AI legal assistant for Pakistan. "
-            "Use the following pieces of retrieved context to answer the question. "
-            "If you don't know the answer based on the context, say that you don't know and advise consulting a real lawyer. "
-            "Use clear, professional, and empathetic language.\n"
-            "CRITICAL: Always respond in the EXACT SAME language the user asked the question in. "
-            "If the user asks in English, respond in English. If they ask in Urdu (اردو), respond in Urdu. "
-            "If they ask in Roman Urdu, respond in Roman Urdu.\n\n"
+            "You are Qanoon Buddy, an exceptionally intelligent, empathetic, and highly capable legal assistant for Pakistan. "
+            "Your personality should be warm, deeply knowledgeable, and highly professional—similar to an expert attorney who truly cares about their client. "
+            "Use the provided context to answer the user's question, but feel free to synthesize it naturally. "
+            "Instead of dry recitations, use markdown formatting (like bullet points and bold text) to make your response easy to read and beautiful. "
+            "If you don't know the answer, politely say so, but offer general guidance on who they should seek out (like a specialized lawyer).\n"
+            "CRITICAL RULES:\n"
+            "1. Always respond in the EXACT SAME language the user asked the question in (English, Urdu (اردو), or Roman Urdu).\n"
+            "2. Keep a warm, assuring tone, using empathetic phrases ('I understand this is a difficult situation...', 'Here is what Pakistani law says...').\n"
+            "3. Remember that you are an AI, not a human, and clarify that this does not constitute a formal attorney-client relationship.\n\n"
             "Context: {context}"
         )
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
         ])
         
@@ -106,7 +111,17 @@ async def predict(req: PredictRequest):
         raise HTTPException(status_code=500, detail="RAG Chain not initialized (missing FAISS index?)")
         
     try:
-        result = rag_chain.invoke({"input": req.query})
+        chat_history = []
+        for msg in req.history:
+            if msg.get("role") == "user":
+                chat_history.append(HumanMessage(content=msg.get("content", "")))
+            elif msg.get("role") == "ai":
+                chat_history.append(AIMessage(content=msg.get("content", "")))
+                
+        result = rag_chain.invoke({
+            "input": req.query,
+            "chat_history": chat_history
+        })
         return PredictResponse(response=result["answer"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
