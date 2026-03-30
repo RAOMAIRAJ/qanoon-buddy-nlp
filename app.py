@@ -5,8 +5,7 @@ from pydantic import BaseModel
 from typing import List
 from dotenv import load_dotenv
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -66,11 +65,13 @@ rag_chain = None
 def load_models():
     global vector_store, rag_chain
     try:
+        # We are reverting back to the local HuggingFace embeddings
+        from langchain_huggingface import HuggingFaceEmbeddings
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             google_api_key=os.environ.get("GEMINI_API_KEY"),
             temperature=0.3,
             max_tokens=None,
@@ -132,12 +133,10 @@ async def analyze_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
         
     try:
-        # Save file temporarily
         temp_path = f"temp_{file.filename}"
         with open(temp_path, "wb") as f:
             f.write(await file.read())
             
-        # Extract text using PyPDFLoader or direct pypdf
         from langchain_community.document_loaders import PyPDFLoader
         loader = PyPDFLoader(temp_path)
         pages = loader.load()
@@ -148,12 +147,11 @@ async def analyze_document(file: UploadFile = File(...)):
         if not full_text.strip():
             raise HTTPException(status_code=400, detail="Could not extract text from the PDF.")
             
-        # Truncate text to avoid token limits. Gemini 1.5 minimum is 1M tokens, but we use flash. Still fine for 20k chars
         if len(full_text) > 30000:
             full_text = full_text[:30000] + "... [Text Truncated]"
             
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             google_api_key=os.environ.get("GEMINI_API_KEY"),
             temperature=0.2,
         )

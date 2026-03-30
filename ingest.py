@@ -1,9 +1,13 @@
 import os
 import glob
+import time
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DATA_DIR = "data/laws"
 INDEX_PATH = "faiss_index"
@@ -25,7 +29,6 @@ def main():
     print(f"Found {len(pdf_files)} PDFs. Extracting text...")
     
     docs = []
-    # Read each PDF
     for i, path in enumerate(pdf_files):
         print(f"[{i+1}/{len(pdf_files)}] Reading {os.path.basename(path)}")
         try:
@@ -50,13 +53,47 @@ def main():
         chunks.extend(split_texts)
         metadatas.extend([{"source": doc["source"]}] * len(split_texts))
         
-    print(f"Created {len(chunks)} chunks. Initializing embedding model...")
+    print(f"Created {len(chunks)} chunks. Initializing Google embedding model...")
     
-    # We use a fast, small embedding model locally
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001",
+        google_api_key=os.environ.get("GEMINI_API_KEY"),
+    )
     
-    print("Building FAISS vector index (this may take a few minutes)...")
-    vectorstore = FAISS.from_texts(chunks, embeddings, metadatas=metadatas)
+    # Using 100 chunks per batch to avoid "Tokens Per Minute" payload limits
+    BATCH_SIZE = 100
+    vectorstore = None
+    
+    import time
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch_chunks = chunks[i:i+BATCH_SIZE]
+        batch_metas = metadatas[i:i+BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
+        print(f"Embedding batch {batch_num}/{total_batches} ({len(batch_chunks)} chunks)...")
+        
+        for attempt in range(4):
+            try:
+                if vectorstore is None:
+                    vectorstore = FAISS.from_texts(batch_chunks, embeddings, metadatas=batch_metas)
+                else:
+                    batch_vs = FAISS.from_texts(batch_chunks, embeddings, metadatas=batch_metas)
+                    vectorstore.merge_from(batch_vs)
+                break
+            except Exception as e:
+                if attempt == 3:
+                    print(f"FATAL ERROR on batch {batch_num}: {str(e)}")
+                    if vectorstore is not None:
+                        print(f"Saving partial index to {INDEX_PATH} before crashing...")
+                        vectorstore.save_local(INDEX_PATH)
+                    raise Exception(f"Failed to embed batch after 4 attempts. You may have exhausted your Gemini Daily Quota. Error: {e}")
+                    
+                if "429" in str(e) or "quota" in str(e).lower() or "rate" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                    wait_time = 15 * (attempt + 1)
+                    print(f"  Quota hit! Limits active. Waiting {wait_time}s before retry {attempt+1}/4... (Error: {str(e)[:100]})")
+                    time.sleep(wait_time)
+                else:
+                    raise
     
     print(f"Saving index to {INDEX_PATH}...")
     vectorstore.save_local(INDEX_PATH)
