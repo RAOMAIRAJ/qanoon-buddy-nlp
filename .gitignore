@@ -13,7 +13,6 @@ __pycache__/
 *$py.class
 
 # FAISS Vector Store
-faiss_index/
 data/
 *.zip
 

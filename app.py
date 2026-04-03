@@ -65,13 +65,12 @@ rag_chain = None
 def load_models():
     global vector_store, rag_chain
     try:
-        # We are reverting back to the local HuggingFace embeddings
         from langchain_huggingface import HuggingFaceEmbeddings
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             google_api_key=os.environ.get("GEMINI_API_KEY"),
             temperature=0.3,
             max_tokens=None,
@@ -125,6 +124,8 @@ async def predict(req: PredictRequest):
         })
         return PredictResponse(response=result["answer"])
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/analyze-document")
@@ -151,7 +152,7 @@ async def analyze_document(file: UploadFile = File(...)):
             full_text = full_text[:30000] + "... [Text Truncated]"
             
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             google_api_key=os.environ.get("GEMINI_API_KEY"),
             temperature=0.2,
         )
